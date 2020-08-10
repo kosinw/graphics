@@ -25,7 +25,7 @@ CreateTaskThread(THREAD_PROC_RET (*return_proc)(void*), void* args)
 }
 
 void
-CloseThreadHandle(thread* t)
+JoinTaskThread(thread* t)
 {
-	pthread_cancel(t->handle);
+	pthread_join(t->handle, NULL);
 }

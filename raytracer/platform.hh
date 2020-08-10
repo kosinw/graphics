@@ -15,6 +15,6 @@ u64 GetTimeMilliseconds();
 u64 LockedAdd(volatile u64 *, u64);
 
 thread* CreateTaskThread(THREAD_PROC_RET (*dummy)(void*), void*);
-void CloseThreadHandle(thread*);
+void JoinTaskThread(thread*);
 
 #endif /* PLATFORM_HH */

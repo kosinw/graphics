@@ -1,21 +1,26 @@
 /*
-   raytracer.cc - Small, naive, parallel, SIMD raytracer written in C++.
-
-   Raytracer implemented following the general instructions from https://raytracing.github.io/books/RayTracingInOneWeekend.html.
-   Not using object-oriented programming (and other bloat features from C++), similar style to Handmade Hero series.
-   Using stb_image_write.h to output to a bitmap file.
+   raytracer.cc - Small, parallel raytracer written in C++.
 */
+
+/*
+   TODO(kosi): Todo list
+
+   - Add SIMD instructions.
+   - Add windowing (probably use own platform specific code).
+		- Add dear imgui debugging information.
+   - Use BRDF sampling.
+   - Incremental increase of sample quality. Draw scene w/ one sample per pixel and increase.
+*/
+
+#define STB_IMAGE_WRITE_IMPLEMENTATION
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
+#include <memory>
 
 #include "raytracer.hh"
-
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "stb_image_write.h"
-
 #include "platform.hh"
+#include "stb_image_write.h"
 
 inline u32
 GetTotalBitmapSize(bitmap32 *bmp)
@@ -89,7 +94,7 @@ CastRays(world &scene, volatile u64 *ray_count, const ray3& r, i32 depth)
 	if (depth <= 0)
 		return color3{0,0,0};
 
-	if (scene.Hit(r, constants::TOLERANCE, constants::INFIN, inter)) {
+	if (scene.tree->Hit(r, constants::TOLERANCE, constants::INFIN, inter)) {
 		color3 attenuation;
 		ray3 next_ray;
 
@@ -130,8 +135,8 @@ RenderTile(world* scene,
 
 			for (i32 s = 0; s < samples_per_pixel; ++s)
 			{
-				auto u = r64(x + RandomBilateral()) / (bitmap->width-1);
-				auto v = r64(y + RandomBilateral()) / (bitmap->height-1);
+				auto u = r64(x + RandomUnilateral()) / (bitmap->width-1);
+				auto v = r64(y + RandomUnilateral()) / (bitmap->height-1);
 
 				ray3 r = GetRay(scene->cam, u, v);
 
@@ -154,6 +159,8 @@ TryRenderTile(task_queue *queue) {
 	if (!DequeueTask(queue, &order)) {
 		return false;
 	}
+
+	u64 entropy = order.xmax*123913 + order.ymax*85939 + order.xmin*28282 + order.ymin*99274;
 
 	RenderTile(order.scene,
 			order.bmp,
@@ -178,17 +185,60 @@ ThreadProc(void *arguments) {
 }
 
 internal world
-RandomScene() {
+TwoSpheres()
+{
 	world scene = {};
 
-	auto ground_material = AddLambertian(scene, color3{0.5, 0.5, 0.5});
-	AddSphere(scene, point3{0, -1000, 0}, 1000, ground_material);
+	auto checker = std::make_shared<checker_texture>();
 
-	for (int a = -5; a < 5; ++a) {
-		for (int b = -5; b < 5; ++b) {
-			auto mat_prob = RandomBilateral();
+	auto odd = std::make_shared<solid_color>();
+	odd->color_value = {0.2, 0.3, 0.1};
 
-			point3 center{a + 0.9*RandomBilateral(), 0.2, b + 0.9*RandomBilateral()};
+	checker->odd = odd;
+
+	auto even = std::make_shared<solid_color>();
+	even->color_value = {0.9, 0.9, 0.9};
+
+	checker->even = even;
+
+	auto l = AddLambertian(scene, checker);
+
+	AddSphere(scene, point3{0, 10, 0}, 10, l);
+	AddSphere(scene, point3{0, -10, 0}, 10, l);
+
+	CalculateBVH(scene, 0.0, 1.0);
+
+	return scene;
+}
+
+internal world
+RandomScene()
+{
+	world scene = {};
+
+	/* auto ground_material = AddLambertian(scene, color3{0.5, 0.5, 0.5}); */
+	/* AddSphere(scene, point3{0, -1000, 0}, 1000, ground_material); */
+
+	auto checker = std::make_shared<checker_texture>();
+
+	auto odd = std::make_shared<solid_color>();
+	odd->color_value = {0.2, 0.3, 0.1};
+
+	checker->odd = odd;
+
+	auto even = std::make_shared<solid_color>();
+	even->color_value = {0.9, 0.9, 0.9};
+
+	checker->even = even;
+
+	auto l = AddLambertian(scene, checker);
+	AddSphere(scene, point3{0, -1000, 0}, 1000, l);
+
+	for (int a = -11; a < 11; ++a) {
+		for (int b = -11; b < 11; ++b) {
+			auto mat_prob = RandomUnilateral();
+
+			point3 center{a + 0.9*RandomUnilateral(), 0.2, b + 0.9*RandomUnilateral()};
 
 			if (Length(FromPointAToB(point3{4, 0.2, 0}, center)) > 0.9) {
 				material *sphere_mat;
@@ -197,13 +247,13 @@ RandomScene() {
 					// Lambertian/diffuse
 					auto albedo = Hadamard(SampleRandomVector(), SampleRandomVector());
 					sphere_mat = AddLambertian(scene, albedo);
-					auto center2 = center + vec3{0, RandomBilateral(0,0.5), 0};
+					auto center2 = center + vec3{0, RandomUnilateral(0,0.5), 0};
 					AddMovingSphere(scene, center, center2, 0.0, 1.0, 0.2, sphere_mat);
 
 				} else if (mat_prob < 0.95) {
 					// Metal
 					auto albedo = SampleRandomVector(0.5, 1.0);
-					auto fuzz = RandomBilateral(0, 0.5);
+					auto fuzz = RandomUnilateral(0, 0.5);
 					sphere_mat = AddMetal(scene, albedo, fuzz);
 					AddSphere(scene, center, 0.2, sphere_mat);
 				} else {
@@ -223,6 +273,8 @@ RandomScene() {
 
 	auto mat3 = AddMetal(scene, color3{0.7, 0.6, 0.5}, 0.0);
 	AddSphere(scene, point3{4, 1, 0}, 1.0, mat3);
+
+	CalculateBVH(scene, 0, 1.0);
 
 	return scene;
 }
@@ -245,18 +297,40 @@ main(int argc, char **argv) {
 	}
 
 	// Camera creation
-	point3 lookfrom = point3{13, 2, 3};
-	point3 lookat   = point3{0, 0, 0};
-	vec3 vup        = vec3{0, 1, 0};
+	world scene;
 
-	auto focus_distance = 10;
-	auto aperture       = 0.1;
+	point3 lookfrom;
+	point3 lookat;
+	auto vfov = 40.0;
+	auto aperture = 0.0;
+
+	switch (0) {
+		case 1:
+			scene = RandomScene();
+			lookfrom = {13, 2, 3};
+			lookat = {0, 0, 0};
+			vfov = 20.0;
+			aperture = 0.1;
+			break;
+
+		default:
+		case 2:
+			scene = TwoSpheres();
+			lookfrom = {13, 2, 3};
+			lookat = {0, 0, 0};
+			vfov = 20.0;
+			break;
+	}
+
+
+	vec3 vup{0, 1, 0};
+	auto focus_distance = 10.0;
 
 	camera cam = CreateCamera(
 			lookfrom,
 			lookat,
 			vup,
-			20.0,
+			vfov,
 			aspect_ratio,
 			aperture,
 			focus_distance,
@@ -264,9 +338,12 @@ main(int argc, char **argv) {
 			1.0
 	);
 
-	// World creation
-	auto scene = RandomScene();
 	scene.cam = cam;
+
+	// Seed random number generator
+	RandomUnilateral(true);
+
+	// World creation
 
 	printf("Finished initializing scene!\n");
 
@@ -315,21 +392,24 @@ main(int argc, char **argv) {
 		}
 	}
 
+	std::vector<thread*> threads;
+
 	for (i32 core = 1; core < core_count; ++core) {
-		thread* t = CreateTaskThread(ThreadProc, &queue);
-		CloseThreadHandle(t);
+		threads.push_back(CreateTaskThread(ThreadProc, &queue));
 	}
 
 	while (!AllTasksRetired(&queue)) {
-		printf("\rRaycasting completion: %d%%",
-				i32(100 * r64(queue.retired_tiles)/r64(total_tile_count)));
+		printf("\rRaycasting completion: %.2f%%",
+				100.0 * r64(queue.retired_tiles)/r64(total_tile_count));
 
 		fflush(stdout);
 		TryRenderTile(&queue);
 	}
 
-	printf("\rRaycasting completion: %d%%",
-			i32(100 * r64(queue.retired_tiles)/r64(total_tile_count)));
+	Assert(queue.retired_tiles == QueueSize(&queue));
+
+	printf("\rRaycasting completion: %.1f%%",
+			100.0 * r64(queue.retired_tiles)/r64(total_tile_count));
 
 	fflush(stdout);
 
@@ -338,6 +418,12 @@ main(int argc, char **argv) {
 	printf("\nRaycasting runtime: %lums\n", end_time);
 	printf("Total computed rays: %lurays\n", queue.ray_count);
 	printf("Performance: %fms/ray\n", r64(end_time)/r64(queue.ray_count));
+
+	// Join all threads
+	for (auto thread : threads) {
+		JoinTaskThread(thread);
+		free(thread);
+	}
 
 	// Destroy the world
 	DestroyWorld(scene);
